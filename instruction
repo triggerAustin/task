@@ -1,0 +1,39 @@
+`/app/logs/` holds operational logs from several nodes, one directory per node, written in three different line formats. The nodes' clocks do not agree: `node_alpha` runs on true UTC, the others on free-running local clocks. Reconcile all of it into one corrected timeline and a per-session anomaly report.
+
+Only `.log`, `.jsonl` and `.csv` files carry data. A file's node is the `/app/logs/` subdirectory it sits in.
+
+Lines of the form `[HB_SYNC node=<id> seq=<int> ts=<reading>]` are broadcast sync markers rather than events: every node records the same numbered instant against its own clock. A node's corrected time is $a \cdot t_{local} + b$, where $a$ and $b$ come from the least-squares fit of `node_alpha`'s reading (dependent variable) on that node's own reading (independent variable) across the sequence numbers the two share. Within a single node a `seq` occurring more than once is unusable and is dropped for that node; markers carrying no `seq` are ignored. A node sharing fewer than two usable markers with `node_alpha` takes $a = 1.0$, $b = 0.0$. `node_alpha` defines the reference frame.
+
+Field names vary between formats: `uid`, `user_id` and `account` all denote `user_id`; `ts`, `timestamp` and `time` all denote `timestamp`. A timestamp is either an ISO-8601 UTC instant or a bare decimal count of seconds on that node's own clock.
+
+Quarantine any record that cannot be parsed in its file's format, or that lacks an `event_id`, a user field, or a readable timestamp. `event_id` is unique: taking files in ascending order of their path relative to `/app/logs/` and lines top to bottom, the first record bearing a given `event_id` is kept and every later one is quarantined as well. `quarantined_count` is the total number of records quarantined for any of these reasons. Blank lines and sync markers are not records and are never counted. A missing or unreadable `latency_ms` does not by itself disqualify a record.
+
+Order the timeline by full-precision corrected time ascending, breaking exact ties by `event_id` ascending. Report each corrected time rounded to the nearest millisecond, halves away from zero, formatted `YYYY-MM-DDTHH:MM:SS.sssZ`. Every subsequent calculation — session gaps and durations — uses those emitted millisecond values, not the full-precision ones.
+
+For each record carrying a `latency_ms`, take the trailing window of the 20 most recent such records in timeline order, that record included, and score it $z = (x - \bar{x}) / s$ using the sample standard deviation. A window holding fewer than 20 records, or one whose standard deviation is zero, scores $0.0$. Round scores to six decimals, halves away from zero.
+
+Sessions are keyed on `user_id` and span the whole timeline irrespective of node. An inactivity gap of more than 300 s from that user's previous record opens a new session. A session is named `<user_id>_<start>`, where `<start>` is its first record's emitted timestamp truncated to the second and written `YYYYMMDDHHMMSS`. Its duration is its last emitted timestamp minus its first, and it is anomalous if any of its records scores $|z| > 2.5$.
+
+Write `/app/output/global_timeline.json`:
+
+```json
+{
+  "quarantined_count": 0,
+  "events": [
+    {
+      "event_id": "<id>",
+      "node_id": "<node>",
+      "user_id": "<user>",
+      "timestamp": "2026-06-15T09:14:22.500Z",
+      "latency_ms": 91.4,
+      "z_score": 0.0
+    }
+  ]
+}
+```
+
+`latency_ms` and `z_score` are `null` together when no latency was recorded.
+
+Write `/app/output/session_anomalies.csv` with the exact header `session_id,total_events,duration_seconds,anomaly_flag`, one row per session ordered by `session_id` ascending, `duration_seconds` to six decimals, and `anomaly_flag` spelled `true` or `false`.
+
+Both schemas above are normative.
